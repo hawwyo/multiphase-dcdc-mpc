@@ -12,7 +12,7 @@ class ConverterConfig:
     t_end = 2e-4                  # overall calculation time
     # t_end = 1                  # overall calculation time
     R_commut_time = 0.5e-4      # Time when the load transient occurs
-    R_release_time = 1e-4       # Time when the load transient occurs
+    R_release_time = 1.4e-4       # Time when the load transient occurs
     R_commut_time2 = 1.4e-4     # Time when the load transient occurs
     R_release_time2 = 1.8e-4    # Time when the load transient occurs
 
@@ -30,7 +30,7 @@ class ConverterConfig:
     L = 47e-9                # single phase buck converter inductance [H]
     # L = 20e-9                # single phase buck converter inductance [H]
     C = 12000e-6                # output buck converter capacitance [F]    macimal is 12000uF
-    idc0 = 80                 # initial total DC load current [A]
+    idc0 = 100                 # initial total DC load current [A]
     idc1 = 635                # load current after transient [A]
     dI = 2000*1e6             # derivative of load change: 1000A by 1us
     
@@ -305,7 +305,7 @@ if __name__ == '__main__':
     config = ConverterConfig()
     converter = Converter(config)
 
-    config.t_end = 0.8e-4
+    config.t_end = 2e-4
     D = (config.Ud / config.Us)
     shift = config.switching_T / 2
 
