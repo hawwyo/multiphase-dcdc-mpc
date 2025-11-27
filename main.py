@@ -12,7 +12,7 @@ class ConverterConfig:
     t_end = 2e-4                  # overall calculation time
     # t_end = 1                  # overall calculation time
     R_commut_time = 0.5e-4      # Time when the load transient occurs
-    R_release_time = 1.4e-4       # Time when the load transient occurs
+    R_release_time = 1e-4       # Time when the load transient occurs
     R_commut_time2 = 1.4e-4     # Time when the load transient occurs
     R_release_time2 = 1.8e-4    # Time when the load transient occurs
 
@@ -22,20 +22,19 @@ class ConverterConfig:
 
     switching_T = T / 3
 
-    Nconv = 16                # Number of converters
     Us = 6.5                  # source voltage
     Ud = 0.9                    # desirable voltage 
     Ud_min = Ud - 70E-3       
     Ud_max = Ud + 90E-3       
-    L = 47e-9                # single phase buck converter inductance [H]
+    L = 47e-9               # single phase buck converter inductance [H]
     # L = 20e-9                # single phase buck converter inductance [H]
     C = 12000e-6                # output buck converter capacitance [F]    macimal is 12000uF
-    idc0 = 100                 # initial total DC load current [A]
-    idc1 = 635                # load current after transient [A]
-    dI = 2000*1e6             # derivative of load change: 1000A by 1us
+    idc0 = 200                 # initial total DC load current [A]
+    idc1 = 735                # load current after transient [A]
+    dI = 2000*1e6            # derivative of load change: 2000A by 1us
     
     Rl = 1e-8
-    Rc = 20e-4 / 16
+    Rc = (20e-4) / 16
     # Rl = 0
     # Rc = 0
 
@@ -110,8 +109,6 @@ def calc_duty_ratios(states, output_voltage, config: ConverterConfig):
     Uc = states[-2]
     Rload = states[-1]
 
-    print(Il)
-
     prediction_horizon = 3
 
     A = np.zeros((config.num_phases + 1, config.num_phases + 1))
@@ -167,13 +164,14 @@ def calc_duty_ratios(states, output_voltage, config: ConverterConfig):
 
     def objective(x):
         diff = np.dot(E, x) + np.ravel(D) - Y
-        result = np.dot(diff, diff) # + np.dot(x, x)
+        result = np.dot(diff, diff) # + 0.001 * np.dot(x, x)
 
         next_state = np.ravel(A_pow @ x_t) + np.dot(AB_pow, x)
         next_il = next_state[:config.num_phases]
         std = next_il.std()
 
 
+        # return result
         return result + 0.0001 * std
 
     # def constraint(x):
@@ -192,9 +190,6 @@ def calc_duty_ratios(states, output_voltage, config: ConverterConfig):
 
     global cnt
     cnt += 1
-    if cnt >= 50:
-        print('here')
-
 
     X = X.x[:config.num_phases]
 
@@ -233,9 +228,19 @@ def calc_derivatives(t, y, converter: Converter):
 
     # print(t, switch_states, sum_Il, converter.duty_ratios)
 
-    d_Il = (switch_states * converter.config.Us - Il * converter.config.Rl - Uo) / converter.config.L
+    d_Il = (switch_states * converter.config.Us - Il * converter.config.Rl - Uc) / converter.config.L
     d_Uc = (sum_Il - Uc / Rload) / converter.config.C
+    
+
     d_Rload = 0
+    if t >= converter.config.R_commut_time:
+        if t >= converter.config.R_release_time:
+            if Rload < converter.config.Ud / converter.config.idc0:
+                d_Rload = converter.config.dI
+        else:
+            if Rload > converter.config.Ud / converter.config.idc1:
+                d_Rload = -converter.config.dI
+            
 
     return np.concatenate((d_Il, np.array([d_Uc]), np.array([d_Rload])))
 
@@ -261,8 +266,10 @@ def Simulate(converter: Converter, start_time, end_time, dt, y0, steps_between_c
     t = start_time
     while t < end_time:
         if step % steps_between_control == 0:
+            print(step)
             duty_ratios = calc_duty_ratios(y, calc_output_voltage(y, converter.config), config)
-            print(step, duty_ratios)
+            print(duty_ratios)
+            print()
             converter.duty_ratios = duty_ratios
             # break
 
@@ -278,11 +285,11 @@ def Simulate(converter: Converter, start_time, end_time, dt, y0, steps_between_c
         # if step >= 32999 and step <= 34003:
         #     print('Y', y)
 
-        # if t >= config.R_commut_time:
-        if t >= config.R_commut_time and t <= config.R_release_time:
-            y[-1] = config.Ud / config.idc1
-        else:
-            y[-1] = config.Ud / config.idc0
+        if y[-1] < converter.config.Ud / converter.config.idc1:
+            y[-1] = converter.config.Ud / converter.config.idc1
+        
+        if y[-1] > converter.config.Ud / converter.config.idc0:
+            y[-1] = converter.config.Ud / converter.config.idc0
 
         t += dt
 
@@ -305,13 +312,11 @@ if __name__ == '__main__':
     config = ConverterConfig()
     converter = Converter(config)
 
-    config.t_end = 2e-4
+    # config.t_end = 0.6e-4
     D = (config.Ud / config.Us)
     shift = config.switching_T / 2
 
     converter.duty_ratios = np.full(config.num_phases, D)
-
-    diff = (-config.Ud) * shift / config.L
 
     start_time = 0
     end_time = config.t_end
@@ -319,9 +324,6 @@ if __name__ == '__main__':
     steps_between_control = 500
     dt = config.T / steps_between_control
 
-    initial_i = np.full( config.num_phases, 0.0 )
-    
-    initial_i[1] -= diff
 
     initial_states = np.full( config.num_phases + 2, config.idc0 / config.num_phases)
     # initial_states = np.full( config.num_phases + 2, 0.0 )
@@ -340,7 +342,7 @@ if __name__ == '__main__':
                                         steps_between_control=steps_between_control)
     
 
-    fig, axs = plt.subplots(3, 1)
+    fig, axs = plt.subplots(4, 1)
 
     Il = []
     Uc = []
@@ -359,7 +361,7 @@ if __name__ == '__main__':
     
     axs[0].plot(all_t, total_Il)
     axs[0].set_title('Total current')
-    # axs[1].plot(all_t, Uc)
+    
     
 
     for phase in range(config.num_phases):
@@ -376,6 +378,11 @@ if __name__ == '__main__':
     # axs[2].plot([all_t[0], all_t[-1]], [config.Ud_max, config.Ud_max])
     # axs[2].plot([all_t[0], all_t[-1]], [config.Ud_min, config.Ud_min])
     axs[2].plot(all_t, all_Uo)
+    # axs[2].plot([config.R_commut_time, config.R_commut_time], [config.Ud * 0.8, config.Ud * 1.2])
     axs[2].set_title('Output voltage')
+
+
+    axs[3].plot(all_t, Uc)
+    axs[3].set_title('Uc')
     
     plt.show()
