@@ -10,3 +10,7 @@
 
 ## With phase balancing in objective function:
 <img width="1280" height="966" alt="image" src="https://github.com/user-attachments/assets/0de3cace-0769-4cd5-be62-7ccb99173e2b" />
+
+
+## Output voltage and Uc voltage
+<img width="1120" height="1080" alt="image" src="https://github.com/user-attachments/assets/d950cd2d-b3a8-42e5-8530-0bfcbbdc4bcf" />
