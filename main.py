@@ -1,7 +1,7 @@
 from dataclasses import dataclass
 import numpy as np
 import matplotlib.pyplot as plt
-from scipy.optimize import lsq_linear, minimize
+from scipy.optimize import lsq_linear, minimize, LinearConstraint
 
 # np.seterr(all='raise')
 
@@ -9,10 +9,10 @@ from scipy.optimize import lsq_linear, minimize
 class ConverterConfig:
     
     # Simulation time parrameters
-    t_end = 2e-4                  # overall calculation time
+    t_end = 2.5e-4                  # overall calculation time
     # t_end = 1                  # overall calculation time
     R_commut_time = 0.5e-4      # Time when the load transient occurs
-    R_release_time = 1e-4       # Time when the load transient occurs
+    R_release_time = 2e-4       # Time when the load transient occurs
     R_commut_time2 = 1.4e-4     # Time when the load transient occurs
     R_release_time2 = 1.8e-4    # Time when the load transient occurs
 
@@ -30,8 +30,14 @@ class ConverterConfig:
     # L = 20e-9                # single phase buck converter inductance [H]
     C = 12000e-6                # output buck converter capacitance [F]    macimal is 12000uF
     idc0 = 200                 # initial total DC load current [A]
-    idc1 = 735                # load current after transient [A]
+    idc1 = 1000                # load current after transient [A]
     dI = 2000*1e6            # derivative of load change: 2000A by 1us
+
+    I_plaselimit = 100
+    Uc_limit = Us
+    
+    I_plaselimit = 11000
+    Uc_limit = Us
     
     Rl = 1e-8
     Rc = (20e-4) / 16
@@ -109,7 +115,7 @@ def calc_duty_ratios(states, output_voltage, config: ConverterConfig):
     Uc = states[-2]
     Rload = states[-1]
 
-    prediction_horizon = 3
+    prediction_horizon = 5
 
     A = np.zeros((config.num_phases + 1, config.num_phases + 1))
     for i in range(config.num_phases):
@@ -118,6 +124,8 @@ def calc_duty_ratios(states, output_voltage, config: ConverterConfig):
     A[:, -1] = -1 / config.L
     A[-1, -1] = -1 / (config.C * Rload)
     A = np.identity(config.num_phases + 1) + A * config.T
+
+    print(A)
 
     
     x_t = np.zeros((config.num_phases + 1, 1))
@@ -169,10 +177,18 @@ def calc_duty_ratios(states, output_voltage, config: ConverterConfig):
         next_state = np.ravel(A_pow @ x_t) + np.dot(AB_pow, x)
         next_il = next_state[:config.num_phases]
         std = next_il.std()
+        
+        std *= 1 / (config.Us ** 4)
 
+        return result
+        return result + std
+    
+    X_max = np.full(( prediction_horizon * (config.num_phases + 1), 1 ), config.I_plaselimit, dtype=np.float64)
+    X_max[-1] = config.Uc_limit
+    ub = np.ravel(X_max - A_pow @ x_t)
+    lb = np.ravel( np.zeros_like(X_max) - A_pow @ x_t )
+    xstate_constraint = LinearConstraint(AB_pow, ub=ub)
 
-        # return result
-        return result + 0.0001 * std
 
     # def constraint(x):
     #     pred_states = np.ravel(A @ x_t) + np.dot(AB_pow, x)
@@ -182,7 +198,7 @@ def calc_duty_ratios(states, output_voltage, config: ConverterConfig):
     # return x0
     bounds = tuple((0, 1) for i in range(x0.size))
     # constraints = {'type': 'ineq', 'fun': constraint}
-    X = minimize(objective, x0, method='SLSQP', bounds=bounds)
+    X = minimize(objective, x0, method='SLSQP', bounds=bounds, constraints=xstate_constraint)
     # print(X)
     
     # X = lsq_linear(E, Y - np.ravel(D), (0, 1))
@@ -200,8 +216,8 @@ def calc_duty_ratios(states, output_voltage, config: ConverterConfig):
     #         diff = (Il[phase] - avg_I) / avg_I
     #         X[phase] = avg_D - avg_D * diff
 
-    X[X > 1.0] = 1.0
-    X[X < 0.0] = 0.0
+    # Without any control:
+    # return np.full(config.num_phases, config.Ud / config.Us, dtype=np.float64)
 
     return X
 
@@ -305,6 +321,60 @@ def Simulate(converter: Converter, start_time, end_time, dt, y0, steps_between_c
     return all_t, all_y, all_Uo
 
 
+def prepare_data_for_plotting(all_converter_states):
+    Il = []
+    Uc = []
+    total_Il = []
+    for i in range(config.num_phases):
+        Il.append([])
+    
+    for state in all_converter_states:
+        total_Il.append(sum(state[:config.num_phases]))
+        
+        Uc.append(state[-2])
+        for phase in range(config.num_phases):
+            Il[phase].append( state[phase] )
+    
+    return Il, Uc, total_Il
+
+
+def plot_min_max(axis, x, y):
+    mx_y = max(y)
+    mn_y = min(y)
+
+    axis.axhline(mx_y, color='red', linestyle='--', label=f'Max = {mx_y:.2f}')
+    axis.axhline(mn_y, color='green', linestyle='--', label=f'Min = {mn_y:.2f}')
+    axis.legend(loc='upper left', draggable=True)
+
+def plot_Uc(axis, x, y):    
+    plot_min_max(axis, x, y)
+    axis.plot(x, y)
+    axis.set_xlabel('Time, seconds')
+    axis.set_ylabel('Uc, Volts')
+    axis.set_title('Uc')
+
+def plot_phase_currents(axis, x, Il):
+    import itertools
+    plot_min_max(axis, x, list(itertools.chain.from_iterable(Il)))
+    for phase in range(config.num_phases):
+        axis.plot(x, Il[phase], label=f'Phase {phase}')
+    axis.set_xlabel('Time, seconds')
+    axis.set_ylabel('Ij, Amps') 
+    axis.set_title('Phase currents')
+
+def plot_total_current(axis, x, y):
+    plot_min_max(axis, x, y)
+    axis.plot(x, y)
+    axis.set_xlabel('Time, seconds')
+    axis.set_ylabel('I, Amps')
+    axis.set_title('Total current')
+
+def plot_output_voltage(axis, x, y):
+    plot_min_max(axis, x, y)
+    axis.plot(x, y)
+    axis.set_xlabel('Time, seconds')
+    axis.set_ylabel('Uo, Volts')
+    axis.set_title('Output voltage')
 
 
 if __name__ == '__main__':
@@ -342,47 +412,35 @@ if __name__ == '__main__':
                                         steps_between_control=steps_between_control)
     
 
+    Il, Uc, total_Il = prepare_data_for_plotting(all_states)
+
     fig, axs = plt.subplots(4, 1)
 
-    Il = []
-    Uc = []
-    total_Il = []
-    for i in range(config.num_phases):
-        Il.append([])
     
-    for state in all_states:
-        total_Il.append(sum(state[:config.num_phases]))
-        
-        Uc.append(state[-2])
-        for phase in range(config.num_phases):
-            Il[phase].append( state[phase] )
-
-    subset = 6100
-    
-    axs[0].plot(all_t, total_Il)
-    axs[0].set_title('Total current')
-    
+    plot_phase_currents(axs[0], all_t, Il)
+    plot_Uc(axs[1], all_t, Uc)
+    plot_total_current(axs[2], all_t, total_Il)
+    plot_output_voltage(axs[3], all_t, all_Uo)   
     
 
-    for phase in range(config.num_phases):
-        # axs[2].plot(all_t[:4100], Il[phase][:4100], label=f'Phase {phase}')
-        axs[1].plot(all_t, Il[phase], label=f'Phase {phase}')
-    axs[1].set_title('Phase currents')
+    fig.set_figheight(9)
+    fig.set_figwidth(8)
 
-    # for x in converter.offsets:
-    #     axs[2].plot([x, x], [0, 20])
-    
-    # axs[2].legend()
-    
+    left  = 0.125  # the left side of the subplots of the figure
+    right = 0.9    # the right side of the subplots of the figure
+    bottom = 0.1   # the bottom of the subplots of the figure
+    top = 0.9      # the top of the subplots of the figure
+    wspace = 0.2   # the amount of width reserved for blank space between subplots
+    hspace = 1.2   # the amount of height reserved for white space between subplots
 
-    # axs[2].plot([all_t[0], all_t[-1]], [config.Ud_max, config.Ud_max])
-    # axs[2].plot([all_t[0], all_t[-1]], [config.Ud_min, config.Ud_min])
-    axs[2].plot(all_t, all_Uo)
-    # axs[2].plot([config.R_commut_time, config.R_commut_time], [config.Ud * 0.8, config.Ud * 1.2])
-    axs[2].set_title('Output voltage')
+    # fig.subplots_adjust(left=left, 
+    #                     right=right,
+    #                     bottom=bottom,
+    #                     top=top,
+    #                     wspace=wspace,
+    #                     hspace=hspace)
 
 
-    axs[3].plot(all_t, Uc)
-    axs[3].set_title('Uc')
+    fig.tight_layout()
     
     plt.show()
